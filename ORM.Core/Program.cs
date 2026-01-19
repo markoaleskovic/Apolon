@@ -1,7 +1,12 @@
 ﻿using ORM.Core;
 
-await using var context =
-    new DbContext("Host=localhost;Port=5432;Database=orm_db;Username=postgres;Password=password");
+await using var ctx = new DbContext(
+    "Host=localhost;Port=5432;Database=orm_db;Username=postgres;Password=password",
+    typeof(Patient)
+);
 
-await context.GetConnectionAsync();
-Console.WriteLine(context.GetPostgresVersionAsync());
+var p = new Patient { FirstName = "Marko" };
+ctx.Set<Patient>().Add(p);
+
+await ctx.SaveChangesAsync();
+Console.WriteLine($"Inserted id: {p.Id}");

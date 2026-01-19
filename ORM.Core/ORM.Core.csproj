@@ -12,7 +12,6 @@
     </ItemGroup>
 
     <ItemGroup>
-      <Folder Include="ChangeTracking\" />
       <Folder Include="Materialization\" />
       <Folder Include="Querying\" />
     </ItemGroup>
