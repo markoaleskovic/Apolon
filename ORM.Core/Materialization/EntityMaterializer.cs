@@ -32,6 +32,6 @@ public static class EntityMaterializer
         
     }
 
-    public static T Materialize<T>(IDataRecord record, EntityMap map) where T : class => (T)Materialize(record, map);
+    public static T Materialize<T>(IDataRecord record, EntityMap map) => (T)Materialize(record, map);
 
 }

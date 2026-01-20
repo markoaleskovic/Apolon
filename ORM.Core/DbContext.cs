@@ -1,9 +1,11 @@
+using System.Linq.Expressions;
 using Npgsql;
 using ORM.Core.ChangeTracking;
 using ORM.Core.Mapping;
 using ORM.Core.Mapping.Model;
 using ORM.Core.Materialization;
 using ORM.Core.Sql;
+using ORM.Core.Querying;
 
 namespace ORM.Core;
 
@@ -31,6 +33,25 @@ public sealed class DbContext : IAsyncDisposable
         ChangeTracker.Track(entity, map, EntityState.Added);
     }
 
+    internal void Attach(object entity)
+    {
+        var map = _model.GetEntity(entity.GetType());
+        ChangeTracker.Track(entity, map, EntityState.Unchanged);
+    }
+
+    internal void Update(object entity)
+    {
+        var map = _model.GetEntity(entity.GetType());
+        ChangeTracker.Track(entity, map, EntityState.Modified);
+    }
+
+    internal void Remove(object entity)
+    {
+        var map = _model.GetEntity(entity.GetType());
+        ChangeTracker.Track(entity, map, EntityState.Deleted);
+    }
+
+    
     
     public async Task<T?> FindAsync<T>(object id) where T : class
     {
@@ -59,19 +80,27 @@ public sealed class DbContext : IAsyncDisposable
 
         return entity;
     }
-    
-    //for now until i build expression builder and IQuery stuff
-    public async Task<List<T>> ToListAsync<T>() where T : class
+   
+    internal async Task<List<T>> QueryAsync<T>(Expression expression) where T : class
     {
         var map = _model.GetEntity<T>();
 
+        //build the parts
+        var parts = SqlQueryTranslator.Translate(map, expression);
+
+        // alias columns to ColumnName so materializer can GetOrdinal(ColumnName)
         var selectCols = string.Join(", ", map.Columns.Select(c =>
             $"{Quote(c.ColumnName)} AS {Quote(c.ColumnName)}"));
 
-        var sql = $"SELECT {selectCols} FROM {Quote(map.TableName)};";
+        var sql =
+            $"SELECT {selectCols} FROM {Quote(map.TableName)}" +
+            parts.WhereSql + parts.OrderBySql + parts.LimitSql + ";";
 
         var conn = await GetOpenConnectionAsync();
         await using var cmd = new NpgsqlCommand(sql, conn, _tx);
+
+        if (parts.Parameters.Length > 0)
+            cmd.Parameters.AddRange(parts.Parameters);
 
         await using var reader = await cmd.ExecuteReaderAsync();
 
@@ -85,59 +114,96 @@ public sealed class DbContext : IAsyncDisposable
 
         return result;
     }
-
     
     
     //--------------SAVE--------------
-    public async Task<int> SaveChangesAsync()
+   public async Task<int> SaveChangesAsync()
+{
+    var conn = await GetOpenConnectionAsync();
+
+    // start tx if not already started
+    _tx ??= await conn.BeginTransactionAsync();
+
+    var affected = 0;
+
+    try
     {
-        var conn = await GetOpenConnectionAsync();
-
-        // start tx if not already started
-        _tx ??= await conn.BeginTransactionAsync();
-
-        var affected = 0;
-
-        try
+        foreach (var entry in ChangeTracker.Entries())
         {
-            foreach (var entry in ChangeTracker.Entries().Where(e => e.State == EntityState.Added))
+            switch (entry.State)
             {
-                var (sql, ps, returningPk) = InsertSqlBuilder.Build(entry.Map, entry.Entity);
-
-                await using var cmd = new NpgsqlCommand(sql, conn, _tx);
-                cmd.Parameters.AddRange(ps);
-
-                if (returningPk is not null)
+                case EntityState.Added:
                 {
-                    var newId = await cmd.ExecuteScalarAsync();
-                    SetPkValue(entry.Entity, returningPk, newId);
+                    var (sql, ps, returningPk) = InsertSqlBuilder.Build(entry.Map, entry.Entity);
+
+                    await using var cmd = new NpgsqlCommand(sql, conn, _tx);
+                    cmd.Parameters.AddRange(ps);
+
+                    if (returningPk is not null)
+                    {
+                        var newId = await cmd.ExecuteScalarAsync();
+                        SetPkValue(entry.Entity, returningPk, newId);
+                        affected++; // count this insert as 1
+                    }
+                    else
+                    {
+                        affected += await cmd.ExecuteNonQueryAsync();
+                    }
+
+                    entry.State = EntityState.Unchanged;
+                    break;
                 }
-                else
+
+                case EntityState.Modified:
                 {
+                    var (sql, ps) = UpdateSqlBuilder.Build(entry.Map, entry.Entity);
+
+                    await using var cmd = new NpgsqlCommand(sql, conn, _tx);
+                    cmd.Parameters.AddRange(ps);
+
                     affected += await cmd.ExecuteNonQueryAsync();
+                    entry.State = EntityState.Unchanged;
+                    break;
                 }
 
-                entry.State = EntityState.Unchanged;
-                affected++;
-            }
+                case EntityState.Deleted:
+                {
+                    var (sql, ps) = DeleteSqlBuilder.Build(entry.Map, entry.Entity);
 
-            await _tx.CommitAsync();
+                    await using var cmd = new NpgsqlCommand(sql, conn, _tx);
+                    cmd.Parameters.AddRange(ps);
+
+                    affected += await cmd.ExecuteNonQueryAsync();
+                    entry.State = EntityState.Detached;
+                    break;
+                }
+
+                case EntityState.Unchanged:
+                case EntityState.Detached:
+                default:
+                    break;
+            }
+        }
+
+        await _tx.CommitAsync();
+        await _tx.DisposeAsync();
+        _tx = null;
+
+        return affected;
+    }
+    catch
+    {
+        if (_tx is not null)
+        {
+            await _tx.RollbackAsync();
             await _tx.DisposeAsync();
             _tx = null;
+        }
 
-            return affected;
-        }
-        catch
-        {
-            if (_tx is not null)
-            {
-                await _tx.RollbackAsync();
-                await _tx.DisposeAsync();
-                _tx = null;
-            }
-            throw;
-        }
+        throw;
     }
+}
+
 
     //--------------HELPERS--------------
     private static string Quote(string ident) => "\"" + ident.Replace("\"", "\"\"") + "\"";
