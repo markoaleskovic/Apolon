@@ -1,6 +1,7 @@
 using System.Linq.Expressions;
 using Npgsql;
 using ORM.Core.ChangeTracking;
+using ORM.Core.LazyLoading;
 using ORM.Core.Mapping;
 using ORM.Core.Mapping.Model;
 using ORM.Core.Materialization;
@@ -16,12 +17,15 @@ public sealed class DbContext : IAsyncDisposable
     private NpgsqlTransaction? _tx;
 
     private readonly OrmModel _model;
+    internal OrmModel Model => _model;
+    internal ILazyLoader LazyLoader { get; }
     public ChangeTracker ChangeTracker { get; } = new();
 
     public DbContext(string connStr, params Type[] entityTypes)
     {
         _connectionString = connStr;
-        _model = new ModelBuilder().BuildFrom(entityTypes);
+        _model = new ModelBuilder(useLazyLoading: true).BuildFrom(entityTypes);
+        LazyLoader = new LazyLoader(this, _model);
     }
 
     public DbSet<T> Set<T>() where T : class => new(this);
@@ -73,8 +77,8 @@ public sealed class DbContext : IAsyncDisposable
         await using var reader = await cmd.ExecuteReaderAsync();
         if (!await reader.ReadAsync()) return null;
 
-        var entity = EntityMaterializer.Materialize<T>(reader, map);
-
+        var entity = EntityMaterializer.Materialize<T>(reader, map, LazyLoader);
+        
         //track as Unchanged
         ChangeTracker.Track(entity, map, EntityState.Unchanged);
 
@@ -107,7 +111,7 @@ public sealed class DbContext : IAsyncDisposable
         var result = new List<T>();
         while (await reader.ReadAsync())
         {
-            var entity = EntityMaterializer.Materialize<T>(reader, map);
+            var entity = EntityMaterializer.Materialize<T>(reader, map, LazyLoader);
             ChangeTracker.Track(entity, map, EntityState.Unchanged);
             result.Add(entity);
         }

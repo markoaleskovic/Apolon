@@ -6,4 +6,6 @@ public sealed class EntityMap
     public required string TableName { get; init; }
     public required ColumnMap PrimaryKey { get; init; }
     public required IReadOnlyList<ColumnMap> Columns { get; init; }
+    
+    public List<RelationshipMap> Relationships { get; set; } = [];
 }
