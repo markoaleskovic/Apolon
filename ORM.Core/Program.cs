@@ -7,6 +7,7 @@ await using var ctx = new DbContext(
 
 var p = new Patient { FirstName = "Marko" };
 ctx.Set<Patient>().Add(p);
-
 await ctx.SaveChangesAsync();
-Console.WriteLine($"Inserted id: {p.Id}");
+
+var loaded = await ctx.Set<Patient>().FindAsync(p.Id);
+Console.WriteLine($"Loaded: {loaded?.Id} {loaded?.FirstName}");

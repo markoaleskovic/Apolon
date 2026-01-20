@@ -2,6 +2,7 @@ using Npgsql;
 using ORM.Core.ChangeTracking;
 using ORM.Core.Mapping;
 using ORM.Core.Mapping.Model;
+using ORM.Core.Materialization;
 using ORM.Core.Sql;
 
 namespace ORM.Core;
@@ -23,12 +24,71 @@ public sealed class DbContext : IAsyncDisposable
 
     public DbSet<T> Set<T>() where T : class => new(this);
 
+    //--------------CRUD METHODS--------------
     internal void Add(object entity)
     {
         var map = _model.GetEntity(entity.GetType());
         ChangeTracker.Track(entity, map, EntityState.Added);
     }
 
+    
+    public async Task<T?> FindAsync<T>(object id) where T : class
+    {
+        var map = _model.GetEntity<T>();
+
+        var pkCol = map.PrimaryKey.ColumnName;
+
+        //alias columns to ColumnName to match materializer
+        var selectCols = string.Join(", ", map.Columns.Select(c =>
+            $"{Quote(c.ColumnName)} AS {Quote(c.ColumnName)}"));
+
+        var sql =
+            $"SELECT {selectCols} FROM {Quote(map.TableName)} WHERE {Quote(pkCol)} = @p0 LIMIT 1;";
+
+        var conn = await GetOpenConnectionAsync();
+        await using var cmd = new NpgsqlCommand(sql, conn, _tx);
+        cmd.Parameters.AddWithValue("p0", id);
+
+        await using var reader = await cmd.ExecuteReaderAsync();
+        if (!await reader.ReadAsync()) return null;
+
+        var entity = EntityMaterializer.Materialize<T>(reader, map);
+
+        //track as Unchanged
+        ChangeTracker.Track(entity, map, EntityState.Unchanged);
+
+        return entity;
+    }
+    
+    //for now until i build expression builder and IQuery stuff
+    public async Task<List<T>> ToListAsync<T>() where T : class
+    {
+        var map = _model.GetEntity<T>();
+
+        var selectCols = string.Join(", ", map.Columns.Select(c =>
+            $"{Quote(c.ColumnName)} AS {Quote(c.ColumnName)}"));
+
+        var sql = $"SELECT {selectCols} FROM {Quote(map.TableName)};";
+
+        var conn = await GetOpenConnectionAsync();
+        await using var cmd = new NpgsqlCommand(sql, conn, _tx);
+
+        await using var reader = await cmd.ExecuteReaderAsync();
+
+        var result = new List<T>();
+        while (await reader.ReadAsync())
+        {
+            var entity = EntityMaterializer.Materialize<T>(reader, map);
+            ChangeTracker.Track(entity, map, EntityState.Unchanged);
+            result.Add(entity);
+        }
+
+        return result;
+    }
+
+    
+    
+    //--------------SAVE--------------
     public async Task<int> SaveChangesAsync()
     {
         var conn = await GetOpenConnectionAsync();
@@ -79,6 +139,8 @@ public sealed class DbContext : IAsyncDisposable
         }
     }
 
+    //--------------HELPERS--------------
+    private static string Quote(string ident) => "\"" + ident.Replace("\"", "\"\"") + "\"";
     private static void SetPkValue(object entity, ColumnMap pk, object? dbValue)
     {
         if (dbValue is null || dbValue is DBNull) return;
@@ -88,6 +150,8 @@ public sealed class DbContext : IAsyncDisposable
         pk.Property.SetValue(entity, converted);
     }
 
+    
+    //--------------CONNECTION--------------
     public async Task<NpgsqlConnection> GetOpenConnectionAsync()
     {
         if (_conn is { State: System.Data.ConnectionState.Open }) return _conn;
