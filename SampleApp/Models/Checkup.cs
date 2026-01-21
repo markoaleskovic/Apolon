@@ -1,3 +1,5 @@
+using System;
+using System.Collections.Generic;
 using ORM.Core.LazyLoading;
 using ORM.Core.Mapping.Attributes;
 

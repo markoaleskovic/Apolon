@@ -9,6 +9,7 @@
 
     <ItemGroup>
       <ProjectReference Include="..\ORM.Core\ORM.Core.csproj" />
+      <ProjectReference Include="..\ORM.Migrations\ORM.Migrations.csproj" />
     </ItemGroup>
 
 </Project>

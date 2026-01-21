@@ -1,3 +1,5 @@
+using System;
+using System.Collections.Generic;
 using ORM.Core.LazyLoading;
 using ORM.Core.Mapping.Attributes;
 
@@ -21,7 +23,7 @@ public class Patient : IHasLazyLoader
     [Required]
     [Column("last_name")]
     public string LastName { get; set; } = "";
-
+    
     [Required]
     [Unique]
     [Column("oib")]
@@ -30,6 +32,12 @@ public class Patient : IHasLazyLoader
     [Column("created_at")]
     public DateTime CreatedAt { get; set; }
 
+    [Column("phone")]
+    public string Phone { get; set; } = "";
+    
+    [Column("email")]
+    public string Email { get; set; } = "";
+    
     // 1-1
     [InverseProperty("Patient")]
     public virtual MedicalRecord? MedicalRecord

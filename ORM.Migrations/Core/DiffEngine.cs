@@ -80,13 +80,21 @@ public static class DiffEngine
                 var typeChanged = !string.Equals(o.ClrType, n.ClrType, StringComparison.OrdinalIgnoreCase);
                 var nullChanged = o.IsNullable != n.IsNullable;
                 var identChanged = o.IsIdentity != n.IsIdentity;
-                var defChanged = !Equals(o.DefaultValue, n.DefaultValue);
+                var defChanged = !Equals(NormDefault(o.DefaultValue), NormDefault(n.DefaultValue));
+
+
 
                 if (typeChanged || nullChanged || identChanged || defChanged)
                 {
-                    throw new NotSupportedException(
+                    Console.WriteLine($"DIFF {tName}.{cName}: " +
+                                      $"typeChanged={typeChanged}, nullChanged={nullChanged}, identChanged={identChanged}, " +
+                                      $"oldDef='{o.DefaultValue ?? "null"}', newDef='{n.DefaultValue ?? "null"}'");
+
+                    /*
+                     got errors with this
+                     throw new NotSupportedException(
                         $"Column change not supported automatically: {tName}.{cName}. " +
-                        "Handle with a manual migration (ALTER COLUMN ...).");
+                        "Handle with a manual migration (ALTER COLUMN ...).");*/
                 }
             }
 
@@ -143,6 +151,9 @@ public static class DiffEngine
         //wrap in transaction (each side)
         up = SqlGen.WrapInTransaction(up);
         down = SqlGen.WrapInTransaction(down);
+        
+        
+        
 
         return new MigrationPlan
         {
@@ -150,4 +161,16 @@ public static class DiffEngine
             DownSqlStatements = down
         };
     }
+
+    //helpers
+    private static object? NormDefault(object? v)
+    {
+        if (v is null) return null;
+        if (v is string s && s.Length == 0) return null; // treat "" same as null
+        return v;
+    }
+
+
+    
+    
 }

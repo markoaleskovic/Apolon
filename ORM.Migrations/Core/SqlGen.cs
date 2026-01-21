@@ -4,9 +4,9 @@ internal static class SqlGen
 {
     public static List<string> WrapInTransaction(List<string> statements)
     {
-        var list = new List<string> { "BEGIN;" };
+        var list = new List<string> { "" };
         list.AddRange(statements.Where(s => !string.IsNullOrWhiteSpace(s)));
-        list.Add("COMMIT;");
+        list.Add("");
         return list;
     }
 

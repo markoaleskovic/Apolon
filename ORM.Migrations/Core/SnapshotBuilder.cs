@@ -24,10 +24,10 @@ public static class SnapshotBuilder
                 table.Columns.Add(new ColumnSnapshot
                 {
                     Name = c.ColumnName,
-                    ClrType = clr.AssemblyQualifiedName ?? clr.FullName ?? clr.Name,
+                    ClrType = NormalizeClrType(clr),
                     IsNullable = !c.IsRequired,
                     IsIdentity = c.IsIdentity,
-                    DefaultValue = c.DefaultValue
+                    DefaultValue = NormalizeDefault(c.DefaultValue),
                 });
 
                 if (c.IsUnique && !c.IsPrimaryKey)
@@ -66,4 +66,35 @@ public static class SnapshotBuilder
         snap.Tables = snap.Tables.OrderBy(t => t.Name).ToList();
         return snap;
     }
+    
+    //helper
+    private static string NormalizeClrType(Type t)
+    {
+        t = Nullable.GetUnderlyingType(t) ?? t;
+
+        // store stable names only (no assembly/version)
+        if (t.IsEnum) return "enum:" + (t.FullName ?? t.Name);
+
+        return t.FullName ?? t.Name;   //"System.String", "System.Int64"
+    }
+    private static object? NormalizeDefault(object? v)
+    {
+        if (v is null) return null;
+
+        return v switch
+        {
+            DateTime dt => dt,
+            decimal d => d,
+            double d => d,
+            float f => f,
+            int i => i,
+            long l => l,
+            bool b => b,
+            string s => s,
+            _ => v.ToString() //fallback stable string
+        };
+    }
+
+    
+    
 }

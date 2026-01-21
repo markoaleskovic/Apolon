@@ -1,6 +1,15 @@
-﻿using ORM.Core;
+﻿using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+using ORM.Core;
 using ORM.Core.Querying;
 using SampleApp.Models;
+using ORM.Migrations;
+using ORM.Migrations.Core;
+using System.Reflection;
+using System.Threading.Tasks;
+
 
 var connStr =
     Environment.GetEnvironmentVariable("ORM_CONN") ??
@@ -95,6 +104,10 @@ static class Repl
                         await CmdLazyAsync(ctx, args);
                         break;
 
+                    case "migrations":
+                        await CmdMigrationsAsync(ctx, args);
+                        break;
+                    
                     default:
                         Console.WriteLine("Unknown command. Type 'help'.");
                         break;
@@ -154,6 +167,14 @@ Prescriptions:
   rx add <checkupId> <medId>
   rx update <rxId>
   rx delete <rxId>
+  
+Migrations:
+  migrations add <name>              - generate new migration (auto diff vs snapshot)
+  migrations list                    - list local migration files
+  migrations apply                   - apply pending migrations to DB (tracked)
+  migrations rollback [steps N]      - rollback last N migrations (default 1)
+  migrations status                  - show DB applied migrations (__orm_migrations)
+
 
 Lazy-loading demos:
   lazy patient <id>                 - access Patient.MedicalRecord + Patient.Checkups (triggers lazy loads)
@@ -178,44 +199,239 @@ Notes:
     }
 
     private static async Task CmdSchemaAsync(DbContext ctx, List<string> args)
+{
+    if (args.Count < 2)
     {
-        if (args.Count < 2)
-        {
-            Console.WriteLine("Usage: schema list | schema ping");
-            return;
-        }
-
-        var sub = args[1].ToLowerInvariant();
-        if (sub == "list")
-        {
-            Console.WriteLine("Entities registered in DbContext ctor:");
-            Console.WriteLine("  Patient -> patients");
-            Console.WriteLine("  MedicalRecord -> medical_records");
-            Console.WriteLine("  Checkup -> checkups");
-            Console.WriteLine("  Medication -> medications");
-            Console.WriteLine("  Prescription -> prescriptions");
-            Console.WriteLine("Relationships via [ForeignKey]/[InverseProperty] are discovered by ModelBuilder.");
-            return;
-        }
-
-        if (sub == "ping")
-        {
-            var conn = await ctx.GetOpenConnectionAsync();
-            string[] tables = { "patients", "medical_records", "checkups", "medications", "prescriptions" };
-
-            foreach (var t in tables)
-            {
-                await using var cmd = conn.CreateCommand();
-                cmd.CommandText = $"select count(*) from \"{t}\";";
-                var c = await cmd.ExecuteScalarAsync();
-                Console.WriteLine($"{t}: count={c}");
-            }
-            return;
-        }
-
-        Console.WriteLine("Usage: schema list | schema ping");
+        Console.WriteLine("Usage: schema list | schema ping | schema tables | schema columns <table>");
+        return;
     }
 
+    var sub = args[1].ToLowerInvariant();
+
+    if (sub == "list")
+    {
+        Console.WriteLine("This output is hard coded");
+        Console.WriteLine("Entities registered in DbContext ctor:");
+        Console.WriteLine("  Patient -> patients");
+        Console.WriteLine("  MedicalRecord -> medical_records");
+        Console.WriteLine("  Checkup -> checkups");
+        Console.WriteLine("  Medication -> medications");
+        Console.WriteLine("  Prescription -> prescriptions");
+        Console.WriteLine("Relationships via [ForeignKey]/[InverseProperty] are discovered by ModelBuilder.");
+        return;
+    }
+
+    if (sub == "ping")
+    {
+        var conn = await ctx.GetOpenConnectionAsync();
+        string[] tables = { "patients", "medical_records", "checkups", "medications", "prescriptions" };
+
+        foreach (var t in tables)
+        {
+            await using var cmd = conn.CreateCommand();
+            cmd.CommandText = $"select count(*) from \"{t}\";";
+            var c = await cmd.ExecuteScalarAsync();
+            Console.WriteLine($"{t}: count={c}");
+        }
+        return;
+    }
+
+    if (sub == "tables")
+    {
+        var conn = await ctx.GetOpenConnectionAsync();
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = """
+            SELECT table_name
+            FROM information_schema.tables
+            WHERE table_schema = 'public' AND table_type = 'BASE TABLE'
+            ORDER BY table_name;
+            """;
+
+        await using var r = await cmd.ExecuteReaderAsync();
+        while (await r.ReadAsync())
+            Console.WriteLine(r.GetString(0));
+
+        return;
+    }
+
+    if (sub == "columns")
+    {
+        if (args.Count < 3)
+        {
+            Console.WriteLine("Usage: schema columns <table>");
+            return;
+        }
+
+        var table = args[2];
+
+        var conn = await ctx.GetOpenConnectionAsync();
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = """
+            SELECT
+                column_name,
+                data_type,
+                is_nullable,
+                column_default
+            FROM information_schema.columns
+            WHERE table_schema = 'public' AND table_name = @t
+            ORDER BY ordinal_position;
+            """;
+        var p = cmd.CreateParameter();
+        p.ParameterName = "t";
+        p.Value = table;
+        cmd.Parameters.Add(p);
+
+        await using var r = await cmd.ExecuteReaderAsync();
+
+        var any = false;
+        while (await r.ReadAsync())
+        {
+            any = true;
+            var name = r.GetString(0);
+            var type = r.GetString(1);
+            var nullable = r.GetString(2);
+            var def = r.IsDBNull(3) ? "NULL" : r.GetValue(3)?.ToString();
+            Console.WriteLine($"{name,-24} {type,-18} nullable={nullable,-3} default={def}");
+        }
+
+        if (!any)
+            Console.WriteLine($"No columns found. Check table name '{table}'.");
+
+        return;
+    }
+
+    Console.WriteLine("Usage: schema list | schema ping | schema tables | schema columns <table>");
+}
+
+
+    private static async Task CmdMigrationsAsync(DbContext ctx, List<string> args)
+{
+    if (args.Count < 2)
+    {
+        Console.WriteLine("Usage: migrations add|list|apply|rollback|status ...");
+        return;
+    }
+
+    // Paths relative to SampleApp output folder (bin/Debug/netX)
+    var baseDir = AppContext.BaseDirectory;
+    var migrationsDir = Path.Combine(baseDir, "Migrations");
+    var snapshotsDir = Path.Combine(baseDir, "Snapshots");
+    var snapshotPath = Path.Combine(snapshotsDir, "last.snapshot.json");
+
+    Directory.CreateDirectory(migrationsDir);
+    Directory.CreateDirectory(snapshotsDir);
+
+    var sub = args[1].ToLowerInvariant();
+
+    switch (sub)
+    {
+        case "add":
+        {
+            if (args.Count < 3)
+            {
+                Console.WriteLine("Usage: migrations add <name>");
+                return;
+            }
+
+            var name = args[2];
+
+            // Use the consumer assembly (SampleApp) and namespace filter
+            var consumerAssemblyPath = Assembly.GetExecutingAssembly().Location;
+            var ns = "SampleApp.Models";
+
+            // Calls your migrations generator (snapshot + diff + sql files)
+            var res = MigrationsFacade.AddMigrationFromAssembly(
+                consumerAssemblyPath: consumerAssemblyPath,
+                @namespace: ns,
+                migrationName: name,
+                snapshotPath: snapshotPath,
+                migrationsDir: migrationsDir
+            );
+
+            Console.WriteLine($"Created migration: {res.MigrationId}");
+            Console.WriteLine($"Up:   {res.UpSqlPath}");
+            Console.WriteLine($"Down: {res.DownSqlPath}");
+            Console.WriteLine($"Snapshot: {snapshotPath}");
+            break;
+        }
+
+        case "list":
+        {
+            var files = MigrationFiles.Load(migrationsDir);
+            if (files.Count == 0)
+            {
+                Console.WriteLine("(no local migrations)");
+                return;
+            }
+
+            foreach (var m in files)
+                Console.WriteLine($"{m.Id}");
+            break;
+        }
+
+        case "apply":
+        {
+            // Use the same connection string your DbContext uses (best to keep env var as single source)
+            var connStr =
+                Environment.GetEnvironmentVariable("ORM_CONN") ??
+                "Host=localhost;Port=5432;Database=orm_db;Username=postgres;Password=password";
+
+            await new Migrator().ApplyAsync(connStr, migrationsDir);
+            Console.WriteLine("Applied pending migrations.");
+            break;
+        }
+
+        case "rollback":
+        {
+            var steps = 1;
+            var idx = args.FindIndex(a => a.Equals("steps", StringComparison.OrdinalIgnoreCase));
+            if (idx >= 0 && idx + 1 < args.Count && int.TryParse(args[idx + 1], out var s))
+                steps = s;
+
+            var connStr =
+                Environment.GetEnvironmentVariable("ORM_CONN") ??
+                "Host=localhost;Port=5432;Database=orm_db;Username=postgres;Password=password";
+
+            await new Migrator().RollbackAsync(connStr, migrationsDir, steps);
+            Console.WriteLine($"Rolled back {steps} migration(s).");
+            break;
+        }
+
+        case "status":
+        {
+            var connStr =
+                Environment.GetEnvironmentVariable("ORM_CONN") ??
+                "Host=localhost;Port=5432;Database=orm_db;Username=postgres;Password=password";
+
+            await using var conn = new Npgsql.NpgsqlConnection(connStr);
+            await conn.OpenAsync();
+            await using var tx = await conn.BeginTransactionAsync();
+
+            var repo = new MigrationHistoryRepository();
+            await repo.EnsureAsync(conn, null);
+            var applied = await repo.GetAppliedAsync(conn, null);
+
+            await tx.CommitAsync();
+
+            if (applied.Count == 0)
+            {
+                Console.WriteLine("(no applied migrations in DB)");
+                return;
+            }
+
+            Console.WriteLine("Applied migrations:");
+            foreach (var id in applied)
+                Console.WriteLine($"  {id}");
+            break;
+        }
+
+        default:
+            Console.WriteLine("Usage: migrations add|list|apply|rollback|status ...");
+            break;
+    }
+}
+
+    
     private static async Task CmdSeedAsync(DbContext ctx)
     {
         // Patient
@@ -671,8 +887,14 @@ Notes:
 
             Console.WriteLine($"Patient: {p.Id} {p.FirstName} {p.LastName}");
             
-            var rec = p.MedicalRecord;
-            Console.WriteLine($"MedicalRecord: {(rec is null ? "(null)" : $"Id={rec.Id} Notes='{rec.Notes}'")}");
+            var rec = (await ctx.Set<MedicalRecord>()
+                    .Where(r => r.PatientId == p.Id)
+                    .Take(2)
+                    .ToListAsync())
+                .SingleOrDefault();
+
+            Console.WriteLine($"MedicalRecord(query): {(rec is null ? "(null)" : $"Id={rec.Id} Notes='{rec.Notes}'")}");
+
 
             var checkups = p.Checkups;
             Console.WriteLine($"Checkups: {checkups.Count}");
