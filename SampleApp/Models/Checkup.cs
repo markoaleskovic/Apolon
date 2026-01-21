@@ -18,7 +18,6 @@ public class Checkup : IHasLazyLoader
     [Column("patient_id")]
     public long PatientId { get; set; }
 
-    // Stored in DB as enum type; your ORM treats enums as simple column types.
     [Required]
     [Column("checkup_type")]
     public string CheckupType { get; set; }

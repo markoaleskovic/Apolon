@@ -40,7 +40,7 @@ internal sealed class QueryProvider : IQueryProvider
                 $"Expected ctor not found on {setType.AssemblyQualifiedName}. Available: {available}");
         }
 
-        // Ensure the args match exactly what ctor expects
+        //ensure the args match exactly what ctor expects
         object?[] args = { _context, this, expression };
         return ctor.Invoke(args);
     }

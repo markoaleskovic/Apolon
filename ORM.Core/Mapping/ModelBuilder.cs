@@ -7,7 +7,7 @@ namespace ORM.Core.Mapping;
 public sealed class ModelBuilder
 {
     private readonly bool _useLazyLoading;
-
+    
     public ModelBuilder(bool useLazyLoading = false)
     {
         _useLazyLoading = useLazyLoading;
@@ -197,8 +197,6 @@ public sealed class ModelBuilder
     }
 }
 
-    
-    
     //helpers
     private static bool IsSimpleColumnType(Type t)
     {
@@ -237,7 +235,6 @@ public sealed class ModelBuilder
             {
                 var nav = rel.NavigationProperty;
 
-                // virtual getter required for proxy-style lazy loading
                 var getter = nav.GetGetMethod();
                 if (getter is null)
                     throw new InvalidOperationException(

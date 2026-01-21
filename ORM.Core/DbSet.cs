@@ -40,7 +40,6 @@ public sealed class DbSet<T> : IOrderedQueryable<T> where T : class
     public void Update(T entity) => _context.Update(entity);
     public void Remove(T entity) => _context.Remove(entity);
     public void Attach(T entity) => _context.Attach(entity);
-
-    //terminal execution
+    
     public Task<List<T>> ToListAsync() => _context.QueryAsync<T>(_expression);
 }

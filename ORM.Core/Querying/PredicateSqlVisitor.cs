@@ -50,7 +50,6 @@ internal sealed class PredicateSqlVisitor : ExpressionVisitor
 
     protected override Expression VisitMember(MemberExpression node)
     {
-        // entity property: x.Prop
         if (node.Expression is ParameterExpression)
         {
             var col = _map.Columns.SingleOrDefault(c => c.Property.Name == node.Member.Name);
@@ -60,7 +59,7 @@ internal sealed class PredicateSqlVisitor : ExpressionVisitor
             return node;
         }
 
-        // captured variable / static member -> evaluate to constant
+        //evaluate to constant
         var value = Evaluate(node);
         PushParam(value);
         return node;

@@ -50,7 +50,7 @@ internal static class SqlQueryTranslator
 
         protected override Expression VisitMethodCall(MethodCallExpression node)
         {
-            // Expect Queryable.Where/OrderBy/ThenBy/Take
+            // expect Queryable.Where/OrderBy/ThenBy/Take
             if (node.Method.DeclaringType == typeof(Queryable))
             {
                 switch (node.Method.Name)

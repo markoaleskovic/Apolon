@@ -162,7 +162,7 @@ Lazy-loading demos:
 Notes:
 - Filters supported by your translator are binary comparisons (==, !=, >, >=, <, <=) and && / ||.
 - No StartsWith/Contains until you extend PredicateSqlVisitor. 
-"""); // reflects current translator limitations [file:18][file:22]
+""");
     }
 
     // ---------- Commands ----------
@@ -188,7 +188,6 @@ Notes:
         var sub = args[1].ToLowerInvariant();
         if (sub == "list")
         {
-            // No public API to list model; show what we know in this SampleApp
             Console.WriteLine("Entities registered in DbContext ctor:");
             Console.WriteLine("  Patient -> patients");
             Console.WriteLine("  MedicalRecord -> medical_records");
@@ -235,7 +234,7 @@ Notes:
         ctx.Set<Medication>().Add(m1);
         ctx.Set<Medication>().Add(m2);
 
-        await ctx.SaveChangesAsync(); // shows identity PK roundtrip [file:13]
+        await ctx.SaveChangesAsync(); // shows identity PK roundtrip
 
         // Record (1-1)
         var r = new MedicalRecord { PatientId = p.Id, Notes = "Seed record" };
@@ -303,7 +302,7 @@ Notes:
         var take = TryReadInt(args, "take") ?? 50;
 
         var q = ctx.Set<Patient>().OrderBy(p => p.LastName).ThenBy(p => p.FirstName).Take(take);
-        var list = await q.ToListAsync(); // only execution method [file:14][file:22]
+        var list = await q.ToListAsync();
 
         foreach (var p in list)
             Console.WriteLine($"{p.Id}: {p.FirstName} {p.LastName} ({p.Oib})");
@@ -671,8 +670,7 @@ Notes:
             if (p is null) { Console.WriteLine("Not found."); return; }
 
             Console.WriteLine($"Patient: {p.Id} {p.FirstName} {p.LastName}");
-
-            // These accessors call LazyLoader.LoadReference/LoadCollection (extra queries). [file:41]
+            
             var rec = p.MedicalRecord;
             Console.WriteLine($"MedicalRecord: {(rec is null ? "(null)" : $"Id={rec.Id} Notes='{rec.Notes}'")}");
 
@@ -806,5 +804,3 @@ Notes:
         return res;
     }
 }
-
-// ----------------- ENTRYPOINT -----------------
