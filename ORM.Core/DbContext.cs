@@ -1,12 +1,14 @@
 using System.Linq.Expressions;
+using System.Reflection;
 using Npgsql;
 using ORM.Core.ChangeTracking;
 using ORM.Core.LazyLoading;
 using ORM.Core.Mapping;
+using ORM.Core.Mapping.Attributes;
 using ORM.Core.Mapping.Model;
 using ORM.Core.Materialization;
-using ORM.Core.Sql;
 using ORM.Core.Querying;
+using ORM.Core.Sql;
 
 namespace ORM.Core;
 
@@ -16,54 +18,111 @@ public sealed class DbContext : IAsyncDisposable
     private NpgsqlConnection? _conn;
     private NpgsqlTransaction? _tx;
 
-    private readonly OrmModel _model;
-    internal OrmModel Model => _model;
-    internal ILazyLoader LazyLoader { get; }
+    private ILazyLoader? _lazyLoader;
+    private OrmModel? _model;
+
+    internal OrmModel Model => _model ?? throw new InvalidOperationException("Model not built. Call BuildModel() first.");
+    internal ILazyLoader LazyLoader => _lazyLoader ?? throw new InvalidOperationException("Model not built. Call BuildModel() first.");
+
     public ChangeTracker ChangeTracker { get; } = new();
 
-    public DbContext(string connStr, params Type[] entityTypes)
+    public DbContext(string connStr)
     {
         _connectionString = connStr;
-        _model = new ModelBuilder(useLazyLoading: true).BuildFrom(entityTypes);
-        LazyLoader = new LazyLoader(this, _model);
+    }
+    
+    public async Task ConnectAsync()
+    {
+        _ = await GetOpenConnectionAsync();
     }
 
-    public DbSet<T> Set<T>() where T : class => new(this);
+    public void BuildModel()
+    {
+        if (_model is not null) return;
+
+        var asm = Assembly.GetEntryAssembly()
+                  ?? throw new InvalidOperationException("No entry assembly found. Use BuildModelFromAssembly(...) instead.");
+
+        var entityTypes = DiscoverEntityTypes(asm);
+
+        _model = new ModelBuilder(useLazyLoading: true).BuildFrom(entityTypes);
+        _lazyLoader = new LazyLoader(this, _model);
+    }
+    
+    //if DbContext is created in a library and EntryAssembly is not the consumer app.
+    public void BuildModelFromAssembly(Assembly consumerAssembly)
+    {
+        if (_model is not null) return;
+
+        var entityTypes = DiscoverEntityTypes(consumerAssembly);
+
+        _model = new ModelBuilder(useLazyLoading: true).BuildFrom(entityTypes);
+        _lazyLoader = new LazyLoader(this, _model);
+    }
+
+    private static Type[] DiscoverEntityTypes(Assembly asm)
+    {
+        //search for [Table] attribute
+        var types = asm.GetTypes()
+            .Where(t => t.IsClass && !t.IsAbstract && t.IsPublic)
+            .Where(t => t.GetCustomAttribute<TableAttribute>(inherit: false) is not null)
+            .ToArray();
+
+        if (types.Length == 0)
+            throw new InvalidOperationException($"No public [Table] entities found in assembly '{asm.FullName}'.");
+
+        return types;
+    }
+
+    private void EnsureBuilt()
+    {
+        if (_model is null)
+            BuildModel();
+    }
+
+    public DbSet<T> Set<T>() where T : class
+    {
+        EnsureBuilt();
+        return new DbSet<T>(this);
+    }
 
     //--------------CRUD METHODS--------------
+
     internal void Add(object entity)
     {
-        var map = _model.GetEntity(entity.GetType());
+        EnsureBuilt();
+        var map = Model.GetEntity(entity.GetType());
         ChangeTracker.Track(entity, map, EntityState.Added);
     }
 
     internal void Attach(object entity)
     {
-        var map = _model.GetEntity(entity.GetType());
+        EnsureBuilt();
+        var map = Model.GetEntity(entity.GetType());
         ChangeTracker.Track(entity, map, EntityState.Unchanged);
     }
 
     internal void Update(object entity)
     {
-        var map = _model.GetEntity(entity.GetType());
+        EnsureBuilt();
+        var map = Model.GetEntity(entity.GetType());
         ChangeTracker.Track(entity, map, EntityState.Modified);
     }
 
     internal void Remove(object entity)
     {
-        var map = _model.GetEntity(entity.GetType());
+        EnsureBuilt();
+        var map = Model.GetEntity(entity.GetType());
         ChangeTracker.Track(entity, map, EntityState.Deleted);
     }
 
-    
-    
     public async Task<T?> FindAsync<T>(object id) where T : class
     {
-        var map = _model.GetEntity<T>();
+        EnsureBuilt();
 
+        var map = Model.GetEntity<T>();
         var pkCol = map.PrimaryKey.ColumnName;
-
-        //alias columns to ColumnName to match materializer
+        
         var selectCols = string.Join(", ", map.Columns.Select(c =>
             $"{Quote(c.ColumnName)} AS {Quote(c.ColumnName)}"));
 
@@ -78,21 +137,19 @@ public sealed class DbContext : IAsyncDisposable
         if (!await reader.ReadAsync()) return null;
 
         var entity = EntityMaterializer.Materialize<T>(reader, map, LazyLoader);
-        
-        //track as Unchanged
-        ChangeTracker.Track(entity, map, EntityState.Unchanged);
 
+        ChangeTracker.Track(entity, map, EntityState.Unchanged);
         return entity;
     }
-   
+
     internal async Task<List<T>> QueryAsync<T>(Expression expression) where T : class
     {
-        var map = _model.GetEntity<T>();
+        EnsureBuilt();
 
-        //build the parts
+        var map = Model.GetEntity<T>();
+
         var parts = SqlQueryTranslator.Translate(map, expression);
 
-        // alias columns to ColumnName so materializer can GetOrdinal(ColumnName)
         var selectCols = string.Join(", ", map.Columns.Select(c =>
             $"{Quote(c.ColumnName)} AS {Quote(c.ColumnName)}"));
 
@@ -118,99 +175,101 @@ public sealed class DbContext : IAsyncDisposable
 
         return result;
     }
-    
-    
+
     //--------------SAVE--------------
-   public async Task<int> SaveChangesAsync()
-{
-    var conn = await GetOpenConnectionAsync();
 
-    // start tx if not already started
-    _tx ??= await conn.BeginTransactionAsync();
-
-    var affected = 0;
-
-    try
+    public async Task<int> SaveChangesAsync()
     {
-        foreach (var entry in ChangeTracker.Entries())
+        EnsureBuilt();
+
+        var conn = await GetOpenConnectionAsync();
+
+        _tx ??= await conn.BeginTransactionAsync();
+
+        var affected = 0;
+
+        try
         {
-            switch (entry.State)
+            foreach (var entry in ChangeTracker.Entries())
             {
-                case EntityState.Added:
+                switch (entry.State)
                 {
-                    var (sql, ps, returningPk) = InsertSqlBuilder.Build(entry.Map, entry.Entity);
-
-                    await using var cmd = new NpgsqlCommand(sql, conn, _tx);
-                    cmd.Parameters.AddRange(ps);
-
-                    if (returningPk is not null)
+                    case EntityState.Added:
                     {
-                        var newId = await cmd.ExecuteScalarAsync();
-                        SetPkValue(entry.Entity, returningPk, newId);
-                        affected++; // count this insert as 1
+                        var (sql, ps, returningPk) = InsertSqlBuilder.Build(entry.Map, entry.Entity);
+
+                        await using var cmd = new NpgsqlCommand(sql, conn, _tx);
+                        cmd.Parameters.AddRange(ps);
+
+                        if (returningPk is not null)
+                        {
+                            var newId = await cmd.ExecuteScalarAsync();
+                            SetPkValue(entry.Entity, returningPk, newId);
+                            affected++;
+                        }
+                        else
+                        {
+                            affected += await cmd.ExecuteNonQueryAsync();
+                        }
+
+                        entry.State = EntityState.Unchanged;
+                        break;
                     }
-                    else
+
+                    case EntityState.Modified:
                     {
+                        var (sql, ps) = UpdateSqlBuilder.Build(entry.Map, entry.Entity);
+
+                        await using var cmd = new NpgsqlCommand(sql, conn, _tx);
+                        cmd.Parameters.AddRange(ps);
+
                         affected += await cmd.ExecuteNonQueryAsync();
+                        entry.State = EntityState.Unchanged;
+                        break;
                     }
 
-                    entry.State = EntityState.Unchanged;
-                    break;
+                    case EntityState.Deleted:
+                    {
+                        var (sql, ps) = DeleteSqlBuilder.Build(entry.Map, entry.Entity);
+
+                        await using var cmd = new NpgsqlCommand(sql, conn, _tx);
+                        cmd.Parameters.AddRange(ps);
+
+                        affected += await cmd.ExecuteNonQueryAsync();
+                        entry.State = EntityState.Detached;
+                        break;
+                    }
+
+                    case EntityState.Unchanged:
+                    case EntityState.Detached:
+                    default:
+                        break;
                 }
-
-                case EntityState.Modified:
-                {
-                    var (sql, ps) = UpdateSqlBuilder.Build(entry.Map, entry.Entity);
-
-                    await using var cmd = new NpgsqlCommand(sql, conn, _tx);
-                    cmd.Parameters.AddRange(ps);
-
-                    affected += await cmd.ExecuteNonQueryAsync();
-                    entry.State = EntityState.Unchanged;
-                    break;
-                }
-
-                case EntityState.Deleted:
-                {
-                    var (sql, ps) = DeleteSqlBuilder.Build(entry.Map, entry.Entity);
-
-                    await using var cmd = new NpgsqlCommand(sql, conn, _tx);
-                    cmd.Parameters.AddRange(ps);
-
-                    affected += await cmd.ExecuteNonQueryAsync();
-                    entry.State = EntityState.Detached;
-                    break;
-                }
-
-                case EntityState.Unchanged:
-                case EntityState.Detached:
-                default:
-                    break;
             }
-        }
 
-        await _tx.CommitAsync();
-        await _tx.DisposeAsync();
-        _tx = null;
-
-        return affected;
-    }
-    catch
-    {
-        if (_tx is not null)
-        {
-            await _tx.RollbackAsync();
+            await _tx.CommitAsync();
             await _tx.DisposeAsync();
             _tx = null;
+
+            return affected;
         }
+        catch
+        {
+            if (_tx is not null)
+            {
+                await _tx.RollbackAsync();
+                await _tx.DisposeAsync();
+                _tx = null;
+            }
 
-        throw;
+            throw;
+        }
     }
-}
-
 
     //--------------HELPERS--------------
+
     private static string Quote(string ident) => "\"" + ident.Replace("\"", "\"\"") + "\"";
+
     private static void SetPkValue(object entity, ColumnMap pk, object? dbValue)
     {
         if (dbValue is null || dbValue is DBNull) return;
@@ -220,8 +279,8 @@ public sealed class DbContext : IAsyncDisposable
         pk.Property.SetValue(entity, converted);
     }
 
-    
     //--------------CONNECTION--------------
+
     public async Task<NpgsqlConnection> GetOpenConnectionAsync()
     {
         if (_conn is { State: System.Data.ConnectionState.Open }) return _conn;

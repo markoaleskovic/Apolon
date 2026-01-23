@@ -35,8 +35,8 @@ public class Patient : IHasLazyLoader
     [Column("phone")]
     public string Phone { get; set; } = "";
     
-    [Column("email")]
-    public string Email { get; set; } = "";
+    //[Column("email")]
+    //public string Email { get; set; } = "";
     
     // 1-1
     [InverseProperty("Patient")]

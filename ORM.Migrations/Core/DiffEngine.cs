@@ -12,6 +12,8 @@ public static class DiffEngine
         var down = new List<string>();
 
         //tables added/removed
+        
+        //.Except(first, second, comparer)
         var addedTables = newTables.Keys.Except(oldTables.Keys, StringComparer.OrdinalIgnoreCase).ToList();
         var removedTables = oldTables.Keys.Except(newTables.Keys, StringComparer.OrdinalIgnoreCase).ToList();
 
@@ -67,11 +69,11 @@ public static class DiffEngine
             foreach (var cName in removedCols.OrderBy(x => x))
                 up.Add(SqlGen.DropColumnStatement(oldT.Name, cName));
 
-            //re-add dropped columns (from old snapshot)
+            //re add dropped columns (from old snapshot)
             foreach (var cName in removedCols.OrderByDescending(x => x))
                 down.Add(SqlGen.AddColumnStatement(oldT.Name, oldCols[cName]));
 
-            // Detect unsupported modifications
+            //Detect unsupported modifications
             foreach (var cName in commonCols)
             {
                 var o = oldCols[cName];
@@ -83,12 +85,12 @@ public static class DiffEngine
                 var defChanged = !Equals(NormDefault(o.DefaultValue), NormDefault(n.DefaultValue));
 
 
-
+                //for some reason the engine thinks they have changed and it will throw
                 if (typeChanged || nullChanged || identChanged || defChanged)
                 {
-                    Console.WriteLine($"DIFF {tName}.{cName}: " +
-                                      $"typeChanged={typeChanged}, nullChanged={nullChanged}, identChanged={identChanged}, " +
-                                      $"oldDef='{o.DefaultValue ?? "null"}', newDef='{n.DefaultValue ?? "null"}'");
+                    //Console.WriteLine($"DIFF {tName}.{cName}: " +
+                    //                  $"typeChanged={typeChanged}, nullChanged={nullChanged}, identChanged={identChanged}, " +
+                    //                  $"oldDef='{o.DefaultValue ?? "null"}', newDef='{n.DefaultValue ?? "null"}'");
 
                     /*
                      got errors with this
@@ -152,9 +154,6 @@ public static class DiffEngine
         up = SqlGen.WrapInTransaction(up);
         down = SqlGen.WrapInTransaction(down);
         
-        
-        
-
         return new MigrationPlan
         {
             UpSqlStatements = up,

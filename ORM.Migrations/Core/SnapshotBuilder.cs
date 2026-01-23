@@ -73,6 +73,7 @@ public static class SnapshotBuilder
         t = Nullable.GetUnderlyingType(t) ?? t;
 
         // store stable names only (no assembly/version)
+        // in case it stores for some reason version
         if (t.IsEnum) return "enum:" + (t.FullName ?? t.Name);
 
         return t.FullName ?? t.Name;   //"System.String", "System.Int64"
