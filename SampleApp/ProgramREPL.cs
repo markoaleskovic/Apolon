@@ -1,4 +1,5 @@
 ﻿using System.Globalization;
+using System.Linq.Expressions;
 using System.Reflection;
 using ORM.Core;
 using ORM.Core.Mapping.Model;
@@ -138,6 +139,8 @@ Patients:
   patient add                       - interactive add (dynamic, reads current model columns)
   patient update <id>               - interactive update (dynamic, reads current model columns)
   patient delete <id>               - stage deletion
+  patients where <expr> [take N]    - filter patients (AND,OR,comparisons)
+  patient find <text> [take N]        - find by FirstName/LastName/Oib/Phone
 
 Medical records (1-1):
   records get-by-patient <patientId>
@@ -148,18 +151,22 @@ Checkups (1-many):
   checkups add <patientId>
   checkups update <checkupId>
   checkups delete <checkupId>
+  checkups where <expr> [take N]      - filter checkups
 
 Medications:
   meds list [take N]
   meds add
   meds update <medId>
   meds delete <medId>
+  meds where <expr> [take N]          - filter medications
+  meds find <text> [take N]           - find by Name/AtcCode
 
 Prescriptions:
   rx list-by-checkup <checkupId>
   rx add <checkupId> <medId>
   rx update <rxId>
   rx delete <rxId>
+  rx where <expr> [take N]            - filter prescriptions
 
 Migrations:
   migrations add <name>              - generate new migration (auto diff vs snapshot)
@@ -422,69 +429,224 @@ Notes:
         }
     }
 
-    private static async Task CmdSeedAsync(DbContext ctx)
-    {
-        var model = GetModel(ctx);
+   private static async Task CmdSeedAsync(DbContext ctx)
+{
+    var model = GetModel(ctx);
+    var ticks = DateTime.UtcNow.Ticks;
 
-        // Patient
+    // ---------- Medications (10) ----------
+    var meds = new List<Medication>();
+
+    Medication NewMed(string name, string atc, string dosage)
+    {
+        var m = new Medication();
+        TrySetIfExists(m, "Name", $"{name}-{ticks}-{meds.Count + 1}");
+        TrySetIfExists(m, "AtcCode", atc);
+        TrySetIfExists(m, "DefaultDosage", dosage);
+        EnsureRequiredColumnsHaveValues(model.GetEntity(typeof(Medication)), m);
+        ctx.Set<Medication>().Add(m);
+        meds.Add(m);
+        return m;
+    }
+
+    NewMed("Paracetamol", "N02BE01", "500mg");
+    NewMed("Ibuprofen", "M01AE01", "200mg");
+    NewMed("Omeprazole", "A02BC01", "20mg");
+    NewMed("Amoxicillin", "J01CA04", "500mg");
+    NewMed("Cetirizine", "R06AE07", "10mg");
+    NewMed("Metformin", "A10BA02", "500mg");
+    NewMed("Amlodipine", "C08CA01", "5mg");
+    NewMed("Atorvastatin", "C10AA05", "20mg");
+    NewMed("Salbutamol", "R03AC02", "100mcg");
+    NewMed("Diclofenac", "M01AB05", "50mg");
+
+    // Save now so Medication.Id exists
+    await ctx.SaveChangesAsync();
+
+    // ---------- Patients (8) ----------
+    var patients = new List<Patient>();
+
+    Patient NewPatient(string first, string last, string? phone, int oibSuffix)
+    {
         var p = new Patient();
-        TrySetIfExists(p, "FirstName", "Ivana");
-        TrySetIfExists(p, "LastName", "Marić");
-        TrySetIfExists(p, "Oib", "OIB-" + DateTime.UtcNow.Ticks);
-        TrySetIfExists(p, "CreatedAt", DateTime.UtcNow);
+        TrySetIfExists(p, "FirstName", first);
+        TrySetIfExists(p, "LastName", last);
+        TrySetIfExists(p, "Phone", phone);
+        TrySetIfExists(p, "Oib", $"OIB-{ticks}-{oibSuffix}");
+        TrySetIfExists(p, "CreatedAt", DateTime.UtcNow.AddMinutes(-oibSuffix));
         EnsureRequiredColumnsHaveValues(model.GetEntity(typeof(Patient)), p);
         ctx.Set<Patient>().Add(p);
+        patients.Add(p);
+        return p;
+    }
 
-        // Meds
-        var m1 = new Medication();
-        TrySetIfExists(m1, "Name", "Paracetamol-" + DateTime.UtcNow.Ticks);
-        TrySetIfExists(m1, "AtcCode", "N02BE01");
-        TrySetIfExists(m1, "DefaultDosage", "500mg");
-        EnsureRequiredColumnsHaveValues(model.GetEntity(typeof(Medication)), m1);
-        ctx.Set<Medication>().Add(m1);
+    NewPatient("Ivana", "Marić", "+385911111111", 1);
+    NewPatient("Marko", "Horvat", "+385922222222", 2);
+    NewPatient("Ana", "Kovač", "+385933333333", 3);
+    NewPatient("Luka", "Babić", null, 4);
+    NewPatient("Petra", "Novak", "+385944444444", 5);
+    NewPatient("Maja", "Radić", "+385955555555", 6);
+    NewPatient("Ivan", "Šarić", null, 7);
+    NewPatient("Ema", "Jurić", "+385966666666", 8);
 
-        var m2 = new Medication();
-        TrySetIfExists(m2, "Name", "Ibuprofen-" + (DateTime.UtcNow.Ticks + 1));
-        TrySetIfExists(m2, "AtcCode", "M01AE01");
-        TrySetIfExists(m2, "DefaultDosage", "200mg");
-        EnsureRequiredColumnsHaveValues(model.GetEntity(typeof(Medication)), m2);
-        ctx.Set<Medication>().Add(m2);
+    // Save so Patient.Id exists
+    await ctx.SaveChangesAsync();
 
-        await ctx.SaveChangesAsync();
+    // ---------- MedicalRecords (1-1 for each patient) ----------
+    var records = new List<MedicalRecord>();
 
-        // Record (1-1)
+    void AddRecord(Patient p, string notes)
+    {
         var r = new MedicalRecord();
         TrySetIfExists(r, "PatientId", p.Id);
-        TrySetIfExists(r, "Notes", "Seed record");
+        TrySetIfExists(r, "Notes", notes);
         EnsureRequiredColumnsHaveValues(model.GetEntity(typeof(MedicalRecord)), r);
         ctx.Set<MedicalRecord>().Add(r);
+        records.Add(r);
+    }
 
-        // Checkup
+    AddRecord(patients[0], "No chronic conditions. Occasional headaches.");
+    AddRecord(patients[1], "Penicillin allergy reported.");
+    AddRecord(patients[2], "Hypertension suspected; monitor BP.");
+    AddRecord(patients[3], "Asthma history; uses inhaler when needed.");
+    AddRecord(patients[4], "Seasonal allergies.");
+    AddRecord(patients[5], "Type 2 diabetes; lifestyle counseling.");
+    AddRecord(patients[6], "High cholesterol; diet advised.");
+    AddRecord(patients[7], "GERD symptoms; avoid late meals.");
+
+    // ---------- Checkups (30) ----------
+    var checkups = new List<Checkup>();
+    var types = new[] { "GP", "BLOOD", "X-RAY", "CT", "MRI", "ULTRA", "EKG", "ECHO", "EYE", "DERM", "DENTA", "MAMMO", "EEG" };
+
+    Checkup NewCheckup(Patient p, string type, DateTime performedAt, decimal price, float? temp)
+    {
         var c = new Checkup();
         TrySetIfExists(c, "PatientId", p.Id);
-        TrySetIfExists(c, "CheckupType", "GP");
-        TrySetIfExists(c, "PerformedAt", DateTime.UtcNow);
-        TrySetIfExists(c, "Price", 25.00m);
-        TrySetIfExists(c, "BodyTempC", 36.7f);
+        TrySetIfExists(c, "CheckupType", type);
+        TrySetIfExists(c, "PerformedAt", performedAt);
+        TrySetIfExists(c, "Price", price);
+        TrySetIfExists(c, "BodyTempC", temp);
         EnsureRequiredColumnsHaveValues(model.GetEntity(typeof(Checkup)), c);
         ctx.Set<Checkup>().Add(c);
+        checkups.Add(c);
+        return c;
+    }
 
-        await ctx.SaveChangesAsync();
+    var now = DateTime.UtcNow;
 
-        // Prescription
+    // For each patient: ~3-4 checkups, different dates/types
+    NewCheckup(patients[0], "GP",    now.AddDays(-20), 25m, 36.7f);
+    NewCheckup(patients[0], "BLOOD", now.AddDays(-18), 55m, null);
+    NewCheckup(patients[0], "EYE",   now.AddDays(-5),  30m, null);
+    NewCheckup(patients[0], "EKG",   now.AddDays(-2),  60m, 36.9f);
+
+    NewCheckup(patients[1], "DERM",  now.AddDays(-25), 40m, 37.1f);
+    NewCheckup(patients[1], "GP",    now.AddDays(-9),  25m, 36.8f);
+    NewCheckup(patients[1], "BLOOD", now.AddDays(-7),  55m, null);
+
+    NewCheckup(patients[2], "GP",    now.AddDays(-30), 25m, 36.6f);
+    NewCheckup(patients[2], "CT",    now.AddDays(-28), 250m, null);
+    NewCheckup(patients[2], "BLOOD", now.AddDays(-27), 55m, null);
+    NewCheckup(patients[2], "ECHO",  now.AddDays(-1),  90m, null);
+
+    NewCheckup(patients[3], "GP",     now.AddDays(-16), 25m, 37.4f);
+    NewCheckup(patients[3], "X-RAY",  now.AddDays(-15), 120m, null);
+    NewCheckup(patients[3], "ULTRA",  now.AddDays(-10), 110m, null);
+
+    NewCheckup(patients[4], "GP",     now.AddDays(-12), 25m, 36.7f);
+    NewCheckup(patients[4], "DERM",   now.AddDays(-11), 40m, null);
+    NewCheckup(patients[4], "EYE",    now.AddDays(-3),  30m, null);
+
+    NewCheckup(patients[5], "GP",     now.AddDays(-22), 25m, 36.8f);
+    NewCheckup(patients[5], "BLOOD",  now.AddDays(-21), 55m, null);
+    NewCheckup(patients[5], "EKG",    now.AddDays(-6),  60m, null);
+    NewCheckup(patients[5], "MRI",    now.AddDays(-4),  400m, null);
+
+    NewCheckup(patients[6], "GP",     now.AddDays(-14), 25m, 36.6f);
+    NewCheckup(patients[6], "BLOOD",  now.AddDays(-13), 55m, null);
+    NewCheckup(patients[6], "CT",     now.AddDays(-8),  250m, null);
+
+    NewCheckup(patients[7], "GP",     now.AddDays(-19), 25m, 36.9f);
+    NewCheckup(patients[7], "DENTA",  now.AddDays(-17), 35m, null);
+    NewCheckup(patients[7], "ULTRA",  now.AddDays(-9),  110m, null);
+
+    // Save so Checkup.Id exists (required for prescriptions)
+    await ctx.SaveChangesAsync();
+
+    // ---------- Prescriptions (~45) ----------
+    // Rule of thumb: 1–2 prescriptions per checkup, not all checkups prescribe meds
+    var prescriptions = new List<Prescription>();
+
+    Prescription AddRx(Checkup c, Medication m, string dosage, DateTime start, DateTime? end)
+    {
         var rx = new Prescription();
         TrySetIfExists(rx, "CheckupId", c.Id);
-        TrySetIfExists(rx, "MedicationId", m1.Id);
-        TrySetIfExists(rx, "Dosage", "1x daily");
-        TrySetIfExists(rx, "StartDate", DateTime.UtcNow.Date);
-        TrySetIfExists(rx, "EndDate", null);
+        TrySetIfExists(rx, "MedicationId", m.Id);
+        TrySetIfExists(rx, "Dosage", dosage);
+        TrySetIfExists(rx, "StartDate", start.Date);
+        TrySetIfExists(rx, "EndDate", end?.Date);
         EnsureRequiredColumnsHaveValues(model.GetEntity(typeof(Prescription)), rx);
         ctx.Set<Prescription>().Add(rx);
-
-        await ctx.SaveChangesAsync();
-
-        Console.WriteLine($"Seeded PatientId={p.Id}, RecordId={GetIdOr0(r)}, CheckupId={GetIdOr0(c)}, MedId={GetIdOr0(m1)}, RxId={GetIdOr0(rx)}");
+        prescriptions.Add(rx);
+        return rx;
     }
+
+    // Helper: pick meds by index
+    Medication M(int i) => meds[i];
+
+    // A bunch of hand-written realistic patterns
+    AddRx(checkups[0],  M(0), "1x daily",      now.AddDays(-20), now.AddDays(-10)); // Paracetamol
+    AddRx(checkups[1],  M(1), "Every 8h",      now.AddDays(-18), now.AddDays(-13)); // Ibuprofen
+    AddRx(checkups[3],  M(6), "1x daily",      now.AddDays(-2),  null);             // Amlodipine
+
+    AddRx(checkups[4],  M(4), "1x daily",      now.AddDays(-25), now.AddDays(-5));  // Cetirizine
+    AddRx(checkups[5],  M(0), "As needed",     now.AddDays(-9),  null);
+
+    AddRx(checkups[7],  M(6), "1x daily",      now.AddDays(-30), null);
+    AddRx(checkups[8],  M(2), "1x at night",   now.AddDays(-28), now.AddDays(-14)); // Omeprazole
+    AddRx(checkups[10], M(6), "1x daily",      now.AddDays(-1),  null);
+
+    AddRx(checkups[11], M(9), "2x daily",      now.AddDays(-16), now.AddDays(-11)); // Diclofenac
+    AddRx(checkups[12], M(9), "Every 12h",     now.AddDays(-15), now.AddDays(-13));
+
+    AddRx(checkups[14], M(4), "1x daily",      now.AddDays(-12), now.AddDays(-7));
+    AddRx(checkups[15], M(0), "As needed",     now.AddDays(-11), null);
+
+    AddRx(checkups[17], M(5), "2x daily",      now.AddDays(-22), null);             // Metformin
+    AddRx(checkups[18], M(5), "2x daily",      now.AddDays(-21), null);
+    AddRx(checkups[20], M(7), "1x daily",      now.AddDays(-6),  null);             // Atorvastatin
+
+    AddRx(checkups[21], M(7), "1x daily",      now.AddDays(-14), null);
+    AddRx(checkups[22], M(7), "1x daily",      now.AddDays(-13), null);
+
+    AddRx(checkups[24], M(2), "1x at night",   now.AddDays(-19), now.AddDays(-3));
+    AddRx(checkups[25], M(0), "As needed",     now.AddDays(-17), null);
+
+    // Fill out more prescriptions deterministically: for many checkups add one med
+    // (still "manual-ish" but gives you volume)
+    for (int i = 0; i < checkups.Count; i++)
+    {
+        // Skip some so it's not 100% saturated
+        if (i % 4 == 0) continue;
+
+        var c = checkups[i];
+        var med = meds[i % meds.Count];
+
+        // Avoid duplicating exact checkups already handled above (rough rule)
+        if (prescriptions.Any(x => x.CheckupId == c.Id)) continue;
+
+        var start = c.PerformedAt is DateTime dt ? dt.Date : now.Date;
+        var end = (i % 3 == 0) ? start.AddDays(7) : (DateTime?)null;
+
+        AddRx(c, med, (end is null ? "1x daily" : "2x daily"), start, end);
+    }
+
+    await ctx.SaveChangesAsync();
+
+    Console.WriteLine(
+        $"Seeded: Patients={patients.Count}, Records={records.Count}, Checkups={checkups.Count}, Meds={meds.Count}, Rx={prescriptions.Count}");
+}
+
 
     private static async Task CmdSaveAsync(DbContext ctx)
     {
@@ -509,20 +671,58 @@ Notes:
 
     private static async Task CmdPatientsAsync(DbContext ctx, List<string> args)
     {
-        if (args.Count < 2 || args[1].ToLowerInvariant() != "list")
+        if (args.Count < 2)
         {
-            Console.WriteLine("Usage: patients list [take N]");
+            Console.WriteLine("Usage: patients list take N | patients where <expr> [take N]");
             return;
         }
 
-        var take = TryReadInt(args, "take") ?? 50;
+        var sub = args[1].ToLowerInvariant();
 
-        var q = ctx.Set<Patient>().OrderBy(p => p.LastName).ThenBy(p => p.FirstName).Take(take);
-        var list = await q.ToListAsync();
+        if (sub == "list")
+        {
+            var take = ReadTakeOrDefault(args, 50);
+            var list = await ctx.Set<Patient>()
+                .OrderBy(p => p.LastName)
+                .ThenBy(p => p.FirstName)
+                .Take(take)
+                .ToListAsync();
 
-        foreach (var p in list)
-            Console.WriteLine($"{p.Id}: {p.FirstName} {p.LastName} ({p.Oib})");
+            foreach (var p in list)
+                Console.WriteLine($"{p.Id} {p.FirstName} {p.LastName} {p.Oib}");
+
+            return;
+        }
+
+        if (sub == "where")
+        {
+            if (args.Count < 3)
+            {
+                Console.WriteLine("Usage: patients where <expr> [take N]");
+                Console.WriteLine("Example: patients where LastName = 'Horvat' AND Id > 3 take 20");
+                return;
+            }
+
+            var exprText = string.Join(" ", args.Skip(2).TakeWhile(x => !x.Equals("take", StringComparison.OrdinalIgnoreCase)));
+            var take = ReadTakeOrDefault(args, 50);
+
+            var pred = BuildPredicate<Patient>(exprText);
+
+            var list = await ctx.Set<Patient>()
+                .Where(pred)
+                .OrderBy(p => p.Id)
+                .Take(take)
+                .ToListAsync();
+
+            foreach (var p in list)
+                Console.WriteLine($"{p.Id} {p.FirstName} {p.LastName} {p.Oib} Phone={p.Phone}");
+
+            return;
+        }
+
+        Console.WriteLine("Usage: patients list take N | patients where <expr> [take N]");
     }
+
 
     private static async Task CmdPatientAsync(DbContext ctx, List<string> args)
     {
@@ -545,6 +745,47 @@ Notes:
                 break;
             }
 
+            case "find":
+            {
+                if (args.Count < 3)
+                {
+                    Console.WriteLine("Usage: patient find <text> [take N]");
+                    Console.WriteLine("Example: patient find Ivana take 10");
+                    return;
+                }
+
+                var take = ReadTakeOrDefault(args, 20);
+
+                // Keep the search text as one string
+                var text = string.Join(" ", args.Skip(2).TakeWhile(x => !x.Equals("take", StringComparison.OrdinalIgnoreCase)));
+
+                // predicate translator does NOT support Contains/StartsWith,
+                // "find" as exact match OR (optional) compare by Id if numeric.
+                // possible partial searches via SQL later
+                long? asId = long.TryParse(text, out var idv) ? idv : null;
+
+                var q = ctx.Set<Patient>().AsQueryable();
+
+                if (asId.HasValue)
+                {
+                    q = q.Where(p => p.Id == asId.Value);
+                }
+                else
+                {
+                    q = q.Where(p =>
+                        p.FirstName == text ||
+                        p.LastName == text ||
+                        p.Oib == text ||
+                        p.Phone == text);
+                }
+
+                var list = await q.OrderBy(p => p.Id).Take(take).ToListAsync();
+                foreach (var p in list)
+                    Console.WriteLine($"{p.Id} {p.FirstName} {p.LastName} {p.Oib} Phone={p.Phone}");
+
+                return;
+            }
+            
             case "add":
             {
                 var model = GetModel(ctx);
@@ -677,6 +918,33 @@ Notes:
                 break;
             }
 
+            case "where":
+            {
+                if (args.Count < 3)
+                {
+                    Console.WriteLine("Usage: checkups where <expr> [take N]");
+                    Console.WriteLine("Example: checkups where PatientId = 1 AND Price > 50 take 20");
+                    return;
+                }
+
+                var exprText = string.Join(" ", args.Skip(2).TakeWhile(x => !x.Equals("take", StringComparison.OrdinalIgnoreCase)));
+                var take = ReadTakeOrDefault(args, 50);
+
+                var pred = BuildPredicate<Checkup>(exprText);
+
+                var list = await ctx.Set<Checkup>()
+                    .Where(pred)
+                    .OrderByDescending(c => c.PerformedAt)
+                    .Take(take)
+                    .ToListAsync();
+
+                foreach (var c in list)
+                    Console.WriteLine($"{c.Id} PatientId={c.PatientId} Type={c.CheckupType} At={c.PerformedAt:u} Price={c.Price} Temp={c.BodyTempC}");
+
+                break;
+            }
+
+            
             case "add":
             {
                 if (args.Count < 3) { Console.WriteLine("Usage: checkups add <patientId>"); return; }
@@ -760,7 +1028,58 @@ Notes:
                     Console.WriteLine($"{m.Id}: {m.Name} ATC={m.AtcCode} Default={m.DefaultDosage}");
                 break;
             }
+            
+            case "where":
+            {
+                if (args.Count < 3)
+                {
+                    Console.WriteLine("Usage: meds where <expr> [take N]");
+                    Console.WriteLine("Example: meds where Id > 5 AND AtcCode = 'N02BE01' take 20");
+                    return;
+                }
 
+                var exprText = string.Join(" ", args.Skip(2).TakeWhile(x => !x.Equals("take", StringComparison.OrdinalIgnoreCase)));
+                var take = ReadTakeOrDefault(args, 50);
+
+                var pred = BuildPredicate<Medication>(exprText);
+
+                var list = await ctx.Set<Medication>()
+                    .Where(pred)
+                    .OrderBy(m => m.Id)
+                    .Take(take)
+                    .ToListAsync();
+
+                foreach (var m in list)
+                    Console.WriteLine($"{m.Id} {m.Name} ATC={m.AtcCode} Default={m.DefaultDosage}");
+
+                break;
+            }
+
+            case "find":
+            {
+                if (args.Count < 3)
+                {
+                    Console.WriteLine("Usage: meds find <text> [take N]");
+                    Console.WriteLine("Example: meds find Paracetamol take 10");
+                    return;
+                }
+
+                var take = ReadTakeOrDefault(args, 20);
+                var text = string.Join(" ", args.Skip(2).TakeWhile(x => !x.Equals("take", StringComparison.OrdinalIgnoreCase)));
+
+                var list = await ctx.Set<Medication>()
+                    .Where(m => m.Name == text || m.AtcCode == text)
+                    .OrderBy(m => m.Id)
+                    .Take(take)
+                    .ToListAsync();
+
+                foreach (var m in list)
+                    Console.WriteLine($"{m.Id} {m.Name} ATC={m.AtcCode} Default={m.DefaultDosage}");
+
+                break;
+            }
+            
+            
             case "add":
             {
                 var m = new Medication();
@@ -844,6 +1163,33 @@ Notes:
                 break;
             }
 
+            case "where":
+            {
+                if (args.Count < 3)
+                {
+                    Console.WriteLine("Usage: rx where <expr> [take N]");
+                    Console.WriteLine("Example: rx where MedicationId = 1 AND EndDate = null take 50");
+                    return;
+                }
+
+                var exprText = string.Join(" ", args.Skip(2).TakeWhile(x => !x.Equals("take", StringComparison.OrdinalIgnoreCase)));
+                var take = ReadTakeOrDefault(args, 100);
+
+                var pred = BuildPredicate<Prescription>(exprText);
+
+                var list = await ctx.Set<Prescription>()
+                    .Where(pred)
+                    .OrderBy(r => r.Id)
+                    .Take(take)
+                    .ToListAsync();
+
+                foreach (var r in list)
+                    Console.WriteLine($"{r.Id} CheckupId={r.CheckupId} MedId={r.MedicationId} Dosage={r.Dosage} Start={r.StartDate:yyyy-MM-dd} End={(r.EndDate.HasValue ? r.EndDate.Value.ToString("yyyy-MM-dd") : "-")}");
+
+                break;
+            }
+
+            
             case "add":
             {
                 if (args.Count < 4) { Console.WriteLine("Usage: rx add <checkupId> <medId>"); return; }
@@ -1298,4 +1644,133 @@ Notes:
         if (cur.Length > 0) res.Add(cur);
         return res;
     }
+    
+    private static Expression<Func<T, bool>> BuildPredicate<T>(string exprText)
+{
+    // Grammar (simple):
+    //   term := <prop> <op> <value>
+    //   expr := term ( (AND|OR) term )*
+    //   op   := = != > >= < <=
+    // Values: numbers, true/false, null, or 'single-quoted strings'
+    //
+    // Example:
+    //   FirstName = 'Ivana' AND Id > 5
+    //
+    // NOTE: No parentheses support here;
+    var tokens = TokenizeFilter(exprText);
+    var param = Expression.Parameter(typeof(T), "e");
+
+    int i = 0;
+    Expression ReadTerm()
+    {
+        if (i + 2 >= tokens.Count) throw new InvalidOperationException("Invalid filter term.");
+
+        var propName = tokens[i++];
+        var op = tokens[i++];
+        var valueToken = tokens[i++];
+
+        var prop = typeof(T).GetProperty(propName, BindingFlags.Public | BindingFlags.Instance | BindingFlags.IgnoreCase);
+        if (prop is null) throw new InvalidOperationException($"Unknown property '{propName}'.");
+
+        var left = Expression.Property(param, prop);
+        var rightValue = ParseValue(valueToken, prop.PropertyType);
+        var right = Expression.Constant(rightValue, prop.PropertyType);
+
+        return op switch
+        {
+            "="  => Expression.Equal(left, right),
+            "!=" => Expression.NotEqual(left, right),
+            ">"  => Expression.GreaterThan(left, right),
+            ">=" => Expression.GreaterThanOrEqual(left, right),
+            "<"  => Expression.LessThan(left, right),
+            "<=" => Expression.LessThanOrEqual(left, right),
+            _ => throw new InvalidOperationException($"Unsupported operator '{op}'.")
+        };
+    }
+
+    Expression expr = ReadTerm();
+
+    while (i < tokens.Count)
+    {
+        var logic = tokens[i++].ToUpperInvariant();
+        if (logic != "AND" && logic != "OR") throw new InvalidOperationException("Expected AND/OR.");
+
+        var rhs = ReadTerm();
+        expr = logic == "AND" ? Expression.AndAlso(expr, rhs) : Expression.OrElse(expr, rhs);
+    }
+
+    return Expression.Lambda<Func<T, bool>>(expr, param);
+}
+
+private static List<string> TokenizeFilter(string input)
+{
+    // Keeps quoted strings together: 'Ana Kovač'
+    // Output tokens are: Prop, Op, Value, (AND/OR), Prop, Op, Value...
+    var res = new List<string>();
+    var cur = "";
+    var inQuotes = false;
+
+    for (int j = 0; j < input.Length; j++)
+    {
+        var ch = input[j];
+
+        if (ch == '\'')
+        {
+            inQuotes = !inQuotes;
+            cur += ch;
+            continue;
+        }
+
+        if (!inQuotes && char.IsWhiteSpace(ch))
+        {
+            if (cur.Length > 0) { res.Add(cur); cur = ""; }
+            continue;
+        }
+
+        cur += ch;
+    }
+
+    if (cur.Length > 0) res.Add(cur);
+    return res;
+}
+
+private static object? ParseValue(string token, Type targetType)
+{
+    // null literal
+    if (string.Equals(token, "null", StringComparison.OrdinalIgnoreCase))
+        return null;
+
+    var t = Nullable.GetUnderlyingType(targetType) ?? targetType;
+
+    // quoted string
+    if (token.Length >= 2 && token[0] == '\'' && token[^1] == '\'')
+    {
+        var s = token.Substring(1, token.Length - 2);
+        if (t != typeof(string))
+            throw new InvalidOperationException($"Value '{token}' must match type {t.Name}.");
+        return s;
+    }
+
+    if (t == typeof(string)) return token;
+    if (t == typeof(int)) return int.Parse(token, CultureInfo.InvariantCulture);
+    if (t == typeof(long)) return long.Parse(token, CultureInfo.InvariantCulture);
+    if (t == typeof(decimal)) return decimal.Parse(token, CultureInfo.InvariantCulture);
+    if (t == typeof(float)) return float.Parse(token, CultureInfo.InvariantCulture);
+    if (t == typeof(double)) return double.Parse(token, CultureInfo.InvariantCulture);
+    if (t == typeof(bool)) return bool.Parse(token);
+    if (t == typeof(DateTime)) return DateTime.Parse(token, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind);
+
+    // last resort
+    return Convert.ChangeType(token, t, CultureInfo.InvariantCulture);
+}
+
+private static int ReadTakeOrDefault(List<string> args, int def = 50)
+{
+    var idx = args.FindIndex(a => a.Equals("take", StringComparison.OrdinalIgnoreCase));
+    if (idx < 0 || idx + 1 >= args.Count) return def;
+    return int.TryParse(args[idx + 1], NumberStyles.Integer, CultureInfo.InvariantCulture, out var v) ? v : def;
+}
+
+    
+    
 }
