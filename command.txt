@@ -1,1 +1,4 @@
 type .\00_reset_and_create.sql | docker exec -i postgres-local psql -U postgres -d orm_db
+
+docker exec -it postgres-local bash
+psql -U postgres -d orm_db
