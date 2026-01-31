@@ -114,7 +114,7 @@ public sealed class ModelBuilder
                 // require [ForeignKey("SomeId")]
                 var fkAttr = nav.GetCustomAttribute<ForeignKeyAttribute>(inherit: false);
                 if (fkAttr is null)
-                    continue; // maybe throw?
+                    continue;
 
                 var fkCol = dependent.Columns.SingleOrDefault(c =>
                     string.Equals(c.Property.Name, fkAttr.ForeignKeyPropertyName, StringComparison.Ordinal));
@@ -157,10 +157,10 @@ public sealed class ModelBuilder
 
                 // This navigation is on principal (one side), manySide is dependent
                 // Need inverse config on collection OR on many side (recommended: on many side with [ForeignKey])
-                // We'll accept [InverseProperty] here to find the dependent navigation.
+                // accept [InverseProperty] here to find the dependent navigation.
                 var inverseAttr = nav.GetCustomAttribute<InversePropertyAttribute>(inherit: false);
                 if (inverseAttr is null)
-                    continue; // throw?
+                    continue;
 
                 var depNav = manySide.ClrType.GetProperty(inverseAttr.InverseNavigationPropertyName,
                     BindingFlags.Public | BindingFlags.Instance);

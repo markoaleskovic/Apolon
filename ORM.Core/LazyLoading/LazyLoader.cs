@@ -15,6 +15,7 @@ public sealed class LazyLoader : ILazyLoader
         _model = model;
     }
 
+    //many to one
     public TRelated? LoadReference<TRelated>(object entity, string navigationName) where TRelated : class
     {
         var dependentMap = _model.GetEntity(entity.GetType());
@@ -39,6 +40,7 @@ public sealed class LazyLoader : ILazyLoader
         return _ctx.Set<TRelated>().Where(lambda).ToListAsync().GetAwaiter().GetResult().SingleOrDefault();
     }
 
+    //one to many
     public IReadOnlyList<TRelated> LoadCollection<TRelated>(object entity, string navigationName) where TRelated : class
     {
         var principalMap = _model.GetEntity(entity.GetType());

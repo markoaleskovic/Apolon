@@ -426,7 +426,7 @@ Notes:
     {
         var model = GetModel(ctx);
 
-        // Patient (dynamic required fields safe-fill)
+        // Patient
         var p = new Patient();
         TrySetIfExists(p, "FirstName", "Ivana");
         TrySetIfExists(p, "LastName", "Marić");
@@ -1039,7 +1039,7 @@ Notes:
 
             if (val is null)
             {
-                // fallback so inserts dont fail if a new not null column is added after migration.
+                // fallback so inserts don't fail if a new not null column is added after migration.
                 prop.SetValue(entity, FallbackValue(prop.PropertyType, prop.Name));
             }
         }
