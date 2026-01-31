@@ -98,8 +98,6 @@ public sealed class ModelBuilder
         };
     }
     
-    
-    //yeah, whatever the hell this is man
     private static void BuildRelationships(OrmModel model, List<EntityMap> maps)
 {
     var byClr = maps.ToDictionary(m => m.ClrType);
